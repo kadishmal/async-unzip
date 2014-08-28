@@ -57,7 +57,10 @@ ZipEntry = module.exports = function (centralDirectory) {
 
 	this.entrySize = CONSTANTS.CD_HEADER_SIZE + this.filenameLength + this.extraFieldLength + this.fileCommentLength;
 
-	this.isFile = (this.bitFlag & 8) > 0;
+	// According Open JDK source code at
+	// http://grepcode.com/file/repository.grepcode.com/java/root/jdk/openjdk/6-b14/java/util/zip/ZipEntry.java#ZipEntry.isDirectory%28%29
+	// this is the way to determine if a ZIP entry a file or directory.
+	this.isFile = this.filename.slice(-1) != '/';
 };
 
 ZipEntry.prototype.getData = function (size, cb) {
