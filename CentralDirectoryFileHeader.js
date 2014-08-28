@@ -101,3 +101,7 @@ CentralDirectory.prototype.getNextEntry = function (cb) {
 
 	cb(null, entry);
 };
+
+CentralDirectory.prototype.close = function (cb) {
+	fs.close(this._fd, cb);
+};

@@ -1,5 +1,4 @@
 var async = require('async'),
-		fs = require('fs'),
 		CentralDirectory = require('./CentralDirectoryFileHeader');
 
 var ZipFile = module.exports.ZipFile = function(/*String*/filePath) {
@@ -40,4 +39,14 @@ ZipFile.prototype.getNextEntry = function (cb) {
 			centralDirectory.getNextEntry(cb);
 		}
 	], cb);
+};
+
+ZipFile.prototype.close = function (cb) {
+	!cb && (cb = function () {});
+
+	if (this._centralDirectory) {
+		this._centralDirectory.close(cb);
+	} else {
+		cb();
+	}
 };

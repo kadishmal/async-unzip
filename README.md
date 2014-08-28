@@ -47,5 +47,8 @@ Efficient, fast, asynchronous, in-memory unzip module for Node.js.
 			}
 		], cb);
 	}, function () {
+		// DO NOT FORGET to call `close()` to release the open file descriptor,
+		// otherwise, you will quickly run out of file descriptors.
+		zipFile.close();
 		console.log(arguments);
 	});

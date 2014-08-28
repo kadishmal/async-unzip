@@ -1,7 +1,7 @@
 {
 	"name": "async-unzip",
 	"description": "Efficient, fast, asynchronous, in-memory unzip module for Node.js.",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"author": "Esen Sagynov <kadishmal@gmail.com>",
 	"engines": {
 		"node": ">=0.8.0"
