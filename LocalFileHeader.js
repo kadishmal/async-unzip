@@ -42,6 +42,7 @@ var CONSTANTS = {
 	ERRORS: {
 		INVALID_COMPRESSION_METHOD: 'Invalid or unsupported file compression method.',
 		INVALID_DATA_OFFSET: 'Invalid file data offset.',
+		INVALID_LOCAL_HEADER_OFFSET: 'Invalid local header offset.',
 		INVALID_FILE_HEADER_SIGNATURE: 'Invalid file header signature.'
 	},
 	COMPRESSION_METHODS: {
@@ -67,8 +68,6 @@ LocalFileHeader.prototype.readLocalFileHeader = function (buffer, cb) {
 	if (this.signature !== CONSTANTS.LOCAL_FILE_HEADER_SIGNATURE) {
 		cb(new Error(CONSTANTS.ERRORS.INVALID_FILE_HEADER_SIGNATURE));
 	} else {
-		this._buffer = buffer;
-
 		this.filenameLength = buffer.readUInt16LE(CONSTANTS.OFFSETS.FILENAME_LENGTH);
 		this.extraFieldLength = buffer.readUInt16LE(CONSTANTS.OFFSETS.EXTRA_FIELD_LENGTH);
 
@@ -79,95 +78,99 @@ LocalFileHeader.prototype.readLocalFileHeader = function (buffer, cb) {
 };
 
 LocalFileHeader.prototype.getData = function (size, cb) {
-	var bytesToRead,
-			compressedReadSize,
+	var compressedReadSize,
 			entry = this._entry,
 			self = this;
 
 	if (typeof size === 'function') {
 		cb = size;
 		size = entry.uncompressedSize;
-		bytesToRead = entry.compressedSize;
+		compressedReadSize = entry.compressedSize;
 	} else {
 		if (size > entry.compressedSize) {
-			bytesToRead = entry.compressedSize;
+			compressedReadSize = entry.compressedSize;
 
 			size > entry.uncompressedSize && (size = entry.uncompressedSize);
 		} else if (size < CONSTANTS.MIN_BYTES_TO_READ) {
-			bytesToRead = CONSTANTS.MIN_BYTES_TO_READ;
+			compressedReadSize = CONSTANTS.MIN_BYTES_TO_READ;
 
 			size < 0 && (size = 0);
 		} else {
 			// Read twice more compressed data from the file system to avoid
 			// [Error: invalid distance too far back] errno: -3, code: 'Z_DATA_ERROR' }
 			// when inflating an incomplete compressed data chunks.
-			 bytesToRead = size * 2;
+			compressedReadSize = size * 2;
 		}
 	}
 
-	compressedReadSize = bytesToRead;
-	bytesToRead += CONSTANTS.LOCAL_FILE_HEADER_SIZE + entry.filenameLength + entry.extraFieldLength;
-
 	async.waterfall([
 		function (cb) {
-			fs.read(entry._fd, new Buffer(bytesToRead), 0, bytesToRead, entry.localFileHeaderOffset, cb);
+			// We first need to read the header to determine where the
+			// file data starts, i.e. the file data offset.
+			// The thing is it doesn't always start right after the
+			// header data. There may be some other info in between.
+			fs.read(entry._fd, new Buffer(CONSTANTS.LOCAL_FILE_HEADER_SIZE), 0, CONSTANTS.LOCAL_FILE_HEADER_SIZE, entry.localFileHeaderOffset, cb);
 		},
-		function (bytesRead, buffer, cb) {
-			if (bytesRead == bytesToRead) {
-				self.readLocalFileHeader(buffer, cb);
+		function (bytesRead, headBuffer, cb) {
+			if (bytesRead == CONSTANTS.LOCAL_FILE_HEADER_SIZE) {
+				self.readLocalFileHeader(headBuffer, cb);
 			} else {
-				cb(new Error(CONSTANTS.ERRORS.INVALID_DATA_OFFSET));
+				cb(new Error(CONSTANTS.ERRORS.INVALID_LOCAL_HEADER_OFFSET));
 			}
 		},
 		function (cb) {
-			var buff = new Buffer(size);
+			// Now read the actual data which can be either the compressed data
+			// or already uncompressed, i.e. stored data.
+			fs.read(entry._fd, new Buffer(compressedReadSize), 0, compressedReadSize, entry.localFileHeaderOffset + self.fileDataOffset, cb);
+		},
+		function (bytesRead, buffer, cb) {
+			if (bytesRead == compressedReadSize) {
+				if (entry.compressionMethod == CONSTANTS.COMPRESSION_METHODS.STORED) {
+					cb(null, buffer);
+				} else if (entry.compressionMethod == CONSTANTS.COMPRESSION_METHODS.DEFLATED) {
+					var buff = new Buffer(size),
+							inflator = zlib.createInflateRaw(),
+							written = 0;
 
-			if (entry.compressionMethod == CONSTANTS.COMPRESSION_METHODS.STORED) {
-				self._buffer.copy(buff, 0, self.fileDataOffset, self.fileDataOffset + size);
+					inflator.once('end', onEnd);
 
-				cb(null, buff);
-			} else if (entry.compressionMethod == CONSTANTS.COMPRESSION_METHODS.DEFLATED) {
-				var compressedData = new Buffer(compressedReadSize),
-						inflator = zlib.createInflateRaw(),
-						written = 0;
+					inflator.on('error', function (err) {
+						inflator.removeListener('end', onEnd);
+						inflator.removeListener('readable', processChunk);
 
-				inflator.once('end', onEnd);
+						cb(err);
+					});
 
-				inflator.on('error', function (err) {
-					inflator.removeListener('end', onEnd);
-					inflator.removeListener('readable', processChunk);
-
-					cb(err);
-				});
-
-				function onEnd() {
-					cb(null, buff);
-				}
-
-				function processChunk() {
-					var chunk;
-
-					while (written < size && (chunk = inflator.read())) {
-						var len = size - written;
-
-						chunk.length < len && (len = chunk.length);
-						chunk.copy(buff, written, 0, len);
-
-						written += len;
+					function onEnd() {
+						cb(null, buff);
 					}
 
-					if (written < size) {
-						inflator.once('readable', processChunk);
+					function processChunk() {
+						var chunk;
+
+						while (written < size && (chunk = inflator.read())) {
+							var len = size - written;
+
+							chunk.length < len && (len = chunk.length);
+							chunk.copy(buff, written, 0, len);
+
+							written += len;
+						}
+
+						if (written < size) {
+							inflator.once('readable', processChunk);
+						}
 					}
+
+					// Pass in the compressed data.
+					inflator.end(buffer);
+
+					processChunk();
+				} else {
+					cb(new Error(CONSTANTS.ERRORS.INVALID_COMPRESSION_METHOD));
 				}
-
-				self._buffer.copy(compressedData, 0, self.fileDataOffset, self.fileDataOffset + compressedReadSize);
-
-				inflator.end(compressedData);
-
-				processChunk();
 			} else {
-				cb(new Error(CONSTANTS.ERRORS.INVALID_COMPRESSION_METHOD));
+				cb(new Error(CONSTANTS.ERRORS.INVALID_DATA_OFFSET));
 			}
 		}
 	], cb);
